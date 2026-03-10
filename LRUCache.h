@@ -15,7 +15,7 @@ template <typename Key,typename Value> class LruNode;
 
 template <typename Key,typename Value>
 class LruNode{
-public:
+    public:
     Key key_;
     Value value_;
     std::weak_ptr<LruNode> prev_;
@@ -45,6 +45,12 @@ public:
     void put(Key key,Value value) override;
     bool get(Key key,Value &value) override;
     Value get(Key key) override;
+    void remove(Key key){
+        auto it = nodeMap_.find(key);
+        if(it == nodeMap_.end()) return;
+        removeNode(it->second);
+        nodeMap_.erase(it);
+    }
 
 private:
     void initList();
@@ -116,20 +122,20 @@ void LRUCache<Key,Value>::moveToMostRecent(NodePtr node){
 
 template <typename Key,typename Value>
 void LRUCache<Key,Value>::removeNode(NodePtr node){
-    if(node->prev_.expired()||!node->next_){
-        auto prev = node->prev_.lock();
-        prev->next_ = node->next_;
-        node->next_->prev_ =prev;
-        node->next_ = nullptr;
-    }
+    if(node->prev_.expired()||!node->next_) return;
+    auto prev = node->prev_.lock();
+    prev->next_ = node->next_;
+    node->next_->prev_ =prev;
+    node->next_ = nullptr;
+
 }
 
 template <typename Key,typename Value>
 void LRUCache<Key,Value>::insertNode(NodePtr node){
     node->next_ = dummyHead_->next_;
     node->prev_ = dummyHead_;
+    dummyHead_->next_->prev_ = node;
     dummyHead_->next_ = node;
-    dummyTail_->prev_ = node;
 }
 
 template <typename Key,typename Value>
@@ -139,5 +145,74 @@ void LRUCache<Key,Value>::evictLeastRecent(){
     removeNode(cur);
     nodeMap_.erase(cur->getKey());
 }
+
+
+template <typename Key,typename Value>
+class LRUKCache : public LRUCache<Key,Value>{
+public:
+    using Base = LRUCache<Key,Value>;
+
+    LRUKCache(int capacity,int historyCapacity,int k)
+    : Base(capacity)
+    ,historyList_(std::make_unique<LRUCache<Key,size_t>>(historyCapacity))
+    ,k_(k){}
+
+    void put(Key key,Value value) override;
+    bool get(Key key,Value& value) override;
+    Value get(Key key) override;
+
+private:
+    int k_;
+    std::unique_ptr<LRUCache<Key,size_t>> historyList_;
+    std::unordered_map<Key,Value> historyValueMap_;
+};
+
+template <typename Key,typename Value>
+bool LRUKCache<Key,Value>::get(Key key,Value& value){
+
+    size_t count = historyList_->get(key);
+    count++;
+    historyList_->put(key,count);
+    bool hit = Base::get(key,value);
+    if(hit) return true;
+    auto it = historyValueMap_.find(key);
+    if(count>=k_ &&it!=historyValueMap_.end()){
+        Value storedValue = it->second;
+        historyList_->remove(key);
+        historyValueMap_.erase(key);
+        Base::put(key,storedValue);
+        value = storedValue;
+        return true;
+    }
+    return false;
+
+}
+
+template <typename Key,typename Value>
+Value LRUKCache<Key,Value>::get(Key key){
+    Value v{};
+    get(key,v);
+    return v;
+}
+
+template <typename Key,typename Value>
+void LRUKCache<Key,Value>::put(Key key,Value value){
+    Value tmp{}; 
+    bool hit = Base::get(key,tmp);
+    if(hit){
+        Base::put(key,value);
+        return;
+    }
+    size_t count = historyList_->get(key);
+    count++;
+    historyList_->put(key,count);
+    historyValueMap_[key] = value;
+    if(count>=k_){
+        historyList_->remove(key);
+        historyValueMap_.erase(key);
+        Base::put(key,value);
+    }
+}
+
 
 }
