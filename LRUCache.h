@@ -1,7 +1,9 @@
 #pragma once 
 
 #include <string>
+#include <vector>
 #include <list>
+#include <thread>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -214,5 +216,50 @@ void LRUKCache<Key,Value>::put(Key key,Value value){
     }
 }
 
+template <typename Key,typename Value>
+class HASHLRUCache : public MycachePolicy<Key,Value>{
+public:
+    HASHLRUCache(size_t capacity,int sliceNum):
+    capacity_(capacity),
+    sliceNum_(sliceNum>0?sliceNum:static_cast<int>(std::thread::hardware_concurrency())){
+        size_t sliceSize = (capacity_ + sliceNum_ -1) / sliceNum_;
+        if(sliceSize<0) sliceSize=1;
+        for(int i=0;i<sliceNum_;i++){
+            lruslices_.emplace_back(std::make_unique<LRUCache<Key,Value>>(static_cast<int>(sliceSize)));
+        }
+    }
+    void put(Key key,Value value) override;
+    bool get(Key key,Value &value) override;
+    Value get(Key key)override;
+
+private:
+    size_t hashKey(Key key) const{
+        return std::hash<Key>{}(key);
+    }
+    size_t index(Key key) const{
+        return hashKey(key) %static_cast<size_t>(sliceNum_);
+    }
+
+    size_t capacity_;
+    int sliceNum_;
+    std::vector<std::unique_ptr<LRUCache<Key,Value>>> lruslices_;
+};
+
+template <typename Key,typename Value>
+void HASHLRUCache<Key,Value>::put(Key key,Value value){
+    lruslices_[index(key)]->put(key,value);
+}
+
+template<typename Key,typename Value>
+bool HASHLRUCache<Key,Value>::get(Key key,Value &value){
+    return lruslices_[index(key)]->get(key,value);
+}
+
+template<typename Key,typename Value>
+Value HASHLRUCache<Key,Value>::get(Key key){
+    Value v{};
+    get(key,v);
+    return v;
+}
 
 }
