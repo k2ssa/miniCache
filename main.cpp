@@ -2,6 +2,7 @@
 #include <string>
 #include "CachePolicy.h"
 #include "LRUCache.h"
+#include "LFUCache.h"
 
 static int passed = 0, failed = 0;
 #define CHECK(cond, msg) do { if (cond) { ++passed; std::cout << "  [PASS] " << msg << std::endl; } else { ++failed; std::cout << "  [FAIL] " << msg << std::endl; } } while(0)
@@ -278,6 +279,134 @@ void testStressMixed() {
     }
 }
 
+void testLFUBasic() {
+    std::cout << "\n========== LFU 基础 ==========" << std::endl;
+    Mycache::LFUCache<int, std::string> cache(2);
+    std::string v;
+
+    cache.put(1, "a");
+    cache.put(2, "b");
+
+    // 提升 1 的访问频次：1 频次更高，之后应淘汰 2
+    CHECK(cache.get(1, v) && v == "a", "get(1)=a");
+    CHECK(cache.get(1, v) && v == "a", "get(1) second time");
+
+    cache.put(3, "c"); // 容量满，淘汰 freq 最小的 key(应为 2)
+    CHECK(!cache.get(2, v), "get(2) 未命中（LFU 淘汰）");
+    CHECK(cache.get(1, v) && v == "a", "get(1) 仍存在");
+    CHECK(cache.get(3, v) && v == "c", "get(3)=c");
+}
+
+void testLFUTieByRecencyInSameFreq() {
+    std::cout << "\n========== LFU 同频并列 ==========" << std::endl;
+    Mycache::LFUCache<int, std::string> cache(2);
+    std::string v;
+
+    cache.put(1, "a");
+    cache.put(2, "b");
+
+    // 让它们频次都到 2
+    cache.get(1, v); // 1: freq 2
+    cache.get(2, v); // 2: freq 2
+    // 同频(=2)里：1 更早进入 freq=2 链表，因此应被优先淘汰
+
+    cache.put(3, "c"); // 淘汰 freq=2 链表 front => 1
+    CHECK(!cache.get(1, v), "get(1) 未命中（同频淘汰更早的）");
+    CHECK(cache.get(2, v) && v == "b", "get(2) 仍存在");
+    CHECK(cache.get(3, v) && v == "c", "get(3)=c");
+}
+
+
+void testLFUCapacity0() {
+    std::cout << "\n========== LFU 容量 0 ==========" << std::endl;
+    Mycache::LFUCache<int, std::string> cache(0);
+    std::string v;
+
+    cache.put(1, "a");
+    CHECK(!cache.get(1, v), "capacity=0 put 后 get 必未命中");
+}
+
+void testLFUBasicEvictByFrequency() {
+    std::cout << "\n========== LFU 按频次淘汰 ==========" << std::endl;
+    Mycache::LFUCache<int, std::string> cache(2);
+    std::string v;
+
+    cache.put(1, "a");
+    cache.put(2, "b");
+
+    // 提升 key=1 访问频次
+    CHECK(cache.get(1, v) && v == "a", "get(1) 第1次");
+    CHECK(cache.get(1, v) && v == "a", "get(1) 第2次");
+
+    // 此时：1 的 freq 比 2 大，put(3) 淘汰 freq 最小的 key=2
+    cache.put(3, "c");
+    CHECK(!cache.get(2, v), "淘汰 freq=1 的 2");
+    CHECK(cache.get(1, v) && v == "a", "1 仍在缓存");
+    CHECK(cache.get(3, v) && v == "c", "3 在缓存");
+}
+
+void testLFUTieByRecencySameFreq() {
+    std::cout << "\n========== LFU 同频并列 ==========" << std::endl;
+    Mycache::LFUCache<int, std::string> cache(2);
+    std::string v;
+
+    // 1 和 2 都是初始 freq=1，按实现应淘汰同频里“更早进入/更久未被touch”的那个
+    cache.put(1, "a");
+    cache.put(2, "b");
+
+    cache.put(3, "c"); // 淘汰掉 freq 最小且同频优先更早的
+    CHECK(!cache.get(1, v), "同频并列应先淘汰更早的 key=1");
+    CHECK(cache.get(2, v) && v == "b", "key=2 仍存在");
+    CHECK(cache.get(3, v) && v == "c", "key=3 存在");
+}
+
+void testLFUUpdateValueCountsAsAccess() {
+    std::cout << "\n========== LFU 更新 value ==========" << std::endl;
+    Mycache::LFUCache<int, std::string> cache(2);
+    std::string v;
+
+    cache.put(1, "a");
+    cache.put(2, "b");
+
+    // put 已存在 key=1：会 touch -> freq++
+    cache.put(1, "a_new");
+
+    // 让 2 的 freq 保持更低，put(3) 应淘汰 2
+    cache.put(3, "c");
+    CHECK(cache.get(1, v) && v == "a_new", "put 已存在应更新 value 并提升频次");
+    CHECK(!cache.get(2, v), "应淘汰较低频的 key=2");
+    CHECK(cache.get(3, v) && v == "c", "key=3 在缓存");
+}
+
+void testLFUDeterministicSequence() {
+    std::cout << "\n========== LFU 多步确定性序列 ==========" << std::endl;
+    Mycache::LFUCache<int, std::string> cache(3);
+    std::string v;
+
+    cache.put(1, "a");
+    cache.put(2, "b");
+    cache.put(3, "c");
+
+    // 让频次拉开：1 最热，3 最冷
+    for (int i = 0; i < 5; ++i) CHECK(cache.get(1, v) && v == "a", "get(1) 热点");
+    for (int i = 0; i < 2; ++i) CHECK(cache.get(2, v) && v == "b", "get(2) 中等");
+
+    // put(4)：应淘汰 3（最小 freq）
+    cache.put(4, "d");
+    CHECK(!cache.get(3, v), "put(4) 淘汰最小频次的 3");
+    CHECK(cache.get(1, v) && v == "a", "1 仍存在");
+    CHECK(cache.get(2, v) && v == "b", "2 仍存在");
+    CHECK(cache.get(4, v) && v == "d", "4 存在");
+
+    // 再触发一次：get(4) 使 freq(4) 上升，从而 minFreq 变动
+    CHECK(cache.get(4, v) && v == "d", "get(4) 一次提升频次");
+
+    // put(5)：此时 minFreq 对应应当淘汰 4（实现里同频淘汰头部）
+    cache.put(5, "e");
+    CHECK(!cache.get(4, v), "put(5) 后 4 应被淘汰");
+    CHECK(cache.get(5, v) && v == "e", "5 存在");
+}
+
 int main() {
     std::cout << "========== Mycache 测试 ==========" << std::endl;
 
@@ -302,7 +431,13 @@ int main() {
     testHashLRUManyUpdates();
     testPolymorphismManyKeys();
     testStressMixed();
-
+    testLFUBasic();
+    testLFUTieByRecencyInSameFreq();
+    testLFUCapacity0();
+    testLFUBasicEvictByFrequency();
+    testLFUTieByRecencySameFreq();
+    testLFUUpdateValueCountsAsAccess();
+    testLFUDeterministicSequence();
     std::cout << "\n========== 结果 ==========" << std::endl;
     std::cout << "通过: " << passed << ", 失败: " << failed << std::endl;
     return failed > 0 ? 1 : 0;
