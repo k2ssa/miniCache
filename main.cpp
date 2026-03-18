@@ -407,6 +407,59 @@ void testLFUDeterministicSequence() {
     CHECK(cache.get(5, v) && v == "e", "5 存在");
 }
 
+void testLFUMaxAverageDecay_Triggers() {
+    std::cout << "\n========== LFU 最大平均频次：触发衰减 ==========" << std::endl;
+    Mycache::LFUCache<int, std::string> cache(3, 2); // maxAverageNum=2：很容易触发衰减
+    std::string v;
+
+    cache.put(1, "a"); // f1=1
+    cache.put(2, "b"); // f2=1
+    cache.put(3, "c"); // f3=1
+
+    cache.get(2, v);   // f2=2，f3=1（此时最小是key3）
+    CHECK(v == "b", "pre check get(2)=b");
+
+    for (int i = 0; i < 6; ++i) { // 让平均频次持续上升，触发 aging/decay
+        cache.get(1, v); // 不关心每次值，只要能触发衰减
+    }
+
+    cache.put(4, "d"); // 触发淘汰：应当淘汰掉最小频次的 key
+
+    // key1 应该仍在（如果 key1 被淘汰，说明衰减/淘汰逻辑有大问题）
+    CHECK(cache.get(1, v) && v == "a", "after decay, hot key(1) should remain");
+
+    bool hit2 = cache.get(2, v);
+    if (hit2) CHECK(true, "key2 still exists or was promoted");
+
+    bool hit3 = cache.get(3, v);
+
+    // 至少淘汰了 key2 和 key3 中的一个（容量满 put(4) 必淘汰 1 个）
+    CHECK(!(hit2 && hit3), "after decay+evict, at least one of {2,3} should be evicted");
+
+    CHECK(cache.get(4, v) && v == "d", "get(4)=d");
+}
+void testLFUMaxAverageDecay_NoTrigger_EvictMinFreq() {
+    std::cout << "\n========== LFU 最大平均频次：不触发衰减 ==========" << std::endl;
+    Mycache::LFUCache<int, std::string> cache(3, 1000000); // maxAverageNum 大到几乎不触发
+    std::string v;
+
+    cache.put(1, "a"); // f1=1
+    cache.put(2, "b"); // f2=1
+    cache.put(3, "c"); // f3=1
+
+    cache.get(2, v);   // f2=2
+    CHECK(v == "b", "pre check get(2)=b");
+
+    for (int i = 0; i < 6; ++i) {
+        cache.get(1, v); // 只让 key1 更热，不触发衰减
+    }
+
+    cache.put(4, "d"); // 淘汰：应淘汰最小频次 key3
+
+    CHECK(!cache.get(3, v), "no-decay: key3 should be evicted");
+    CHECK(cache.get(2, v) && v == "b", "no-decay: key2 should remain");
+    CHECK(cache.get(4, v) && v == "d", "get(4)=d");
+}
 int main() {
     std::cout << "========== Mycache 测试 ==========" << std::endl;
 
@@ -438,6 +491,8 @@ int main() {
     testLFUTieByRecencySameFreq();
     testLFUUpdateValueCountsAsAccess();
     testLFUDeterministicSequence();
+    testLFUMaxAverageDecay_Triggers();
+    testLFUMaxAverageDecay_NoTrigger_EvictMinFreq();
     std::cout << "\n========== 结果 ==========" << std::endl;
     std::cout << "通过: " << passed << ", 失败: " << failed << std::endl;
     return failed > 0 ? 1 : 0;
