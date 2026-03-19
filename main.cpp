@@ -3,6 +3,17 @@
 #include "CachePolicy.h"
 #include "LRUCache.h"
 #include "LFUCache.h"
+#include "ARCCache.h"
+
+
+#include <chrono>
+#include <vector>
+#include <iomanip>
+#include <random>
+#include <algorithm>
+#include <array>
+
+
 
 static int passed = 0, failed = 0;
 #define CHECK(cond, msg) do { if (cond) { ++passed; std::cout << "  [PASS] " << msg << std::endl; } else { ++failed; std::cout << "  [FAIL] " << msg << std::endl; } } while(0)
@@ -460,6 +471,356 @@ void testLFUMaxAverageDecay_NoTrigger_EvictMinFreq() {
     CHECK(cache.get(2, v) && v == "b", "no-decay: key2 should remain");
     CHECK(cache.get(4, v) && v == "d", "get(4)=d");
 }
+
+
+void testHashLFUBasic() {
+    std::cout << "\n========== HashLFU 基础 ==========" << std::endl;
+    Mycache::HashLFUCache<int, std::string> cache(8, 4);  // 总容量 8，4 片
+    std::string v;
+
+    cache.put(1, "a");
+    cache.put(2, "b");
+    CHECK(cache.get(1, v) && v == "a", "HashLFU get(1)=a");
+    CHECK(cache.get(2, v) && v == "b", "HashLFU get(2)=b");
+    cache.put(1, "a2");
+    CHECK(cache.get(1, v) && v == "a2", "HashLFU 更新后 get(1)=a2");
+}
+
+void testHashLFUEviction() {
+    std::cout << "\n========== HashLFU 分片内淘汰 ==========" << std::endl;
+    Mycache::HashLFUCache<int, std::string> cache(8, 4);  // 每片约 2
+    std::string v;
+
+    for (int i = 0; i < 20; ++i)
+        cache.put(i, "v" + std::to_string(i));
+    int hits = 0;
+    for (int i = 0; i < 20; ++i)
+        if (cache.get(i, v)) ++hits;
+    CHECK(hits <= 8 && hits >= 1, "HashLFU 总命中数不超过总容量 8");
+}
+
+void testHashLFUPolymorphism() {
+    std::cout << "\n========== HashLFU 多态 ==========" << std::endl;
+    Mycache::MycachePolicy<int, std::string>* p =
+        new Mycache::HashLFUCache<int, std::string>(4, 2);
+    std::string v;
+
+    p->put(10, "ten");
+    CHECK(p->get(10, v) && v == "ten", "基类指针 HashLFU get(10)=ten");
+    p->put(10, "ten2");
+    CHECK(p->get(10, v) && v == "ten2", "基类指针 HashLFU 更新后 get(10)=ten2");
+    delete p;
+}
+
+void testHashLFUManyKeys() {
+    std::cout << "\n========== HashLFU 大量 key ==========" << std::endl;
+    Mycache::HashLFUCache<int, std::string> cache(40, 8);
+    std::string v;
+
+    for (int i = 0; i < 80; ++i)
+        cache.put(i, "h" + std::to_string(i));
+    int hits = 0;
+    for (int i = 0; i < 80; ++i)
+        if (cache.get(i, v)) {
+            ++hits;
+            CHECK(v == "h" + std::to_string(i), "HashLFU get(" + std::to_string(i) + ")");
+        }
+    CHECK(hits <= 40 && hits >= 1, "HashLFU 命中数在 1~40");
+}
+void testARCBasicPutGet() {
+    std::cout << "\n========== ARC 基础 put/get ==========" << std::endl;
+    Mycache::ARCCache<int, std::string> cache(2, 2);
+    std::string v;
+
+    cache.put(1, "a");
+    cache.put(2, "b");
+
+    CHECK(cache.get(1, v) && v == "a", "get(1)=a");
+    CHECK(cache.get(2, v) && v == "b", "get(2)=b");
+}
+
+void testARCUpdateValue() {
+    std::cout << "\n========== ARC 更新 value ==========" << std::endl;
+    Mycache::ARCCache<int, std::string> cache(2, 2);
+    std::string v;
+
+    cache.put(1, "a");
+    cache.put(1, "a2");
+    CHECK(cache.get(1, v) && v == "a2", "put 同 key 更新后 get(1)=a2");
+
+    cache.put(2, "b");
+    CHECK(cache.get(2, v) && v == "b", "get(2)=b");
+}
+
+void testARCEvictionAfterAccess() {
+    std::cout << "\n========== ARC 淘汰/访问顺序 ==========" << std::endl;
+    // 主要验证：访问后更“新”的 key 更不容易被淘汰（至少符合 LRU 部分的直觉）
+    Mycache::ARCCache<int, std::string> cache(2, 2);
+    std::string v1, v2, v3;
+
+    cache.put(1, "a");
+    cache.put(2, "b");
+
+    // 让 1 变得更“新”
+    CHECK(cache.get(1, v1) && v1 == "a", "pre get(1)=a");
+
+    cache.put(3, "c"); // 容量满：应淘汰最久未用的那个（通常淘汰 key=2）
+
+    bool hit1 = cache.get(1, v1);
+    bool hit2 = cache.get(2, v2);
+    bool hit3 = cache.get(3, v3);
+
+    CHECK(hit3 && v3 == "c", "get(3)=c");
+    CHECK(hit1 && v1 == "a", "get(1) 期望仍命中（更热）");
+    CHECK(!hit2, "get(2) 期望未命中（更冷，被淘汰）");
+}
+
+void testARCZeroCapacity() {
+    std::cout << "\n========== ARC 容量 0 ==========" << std::endl;
+    Mycache::ARCCache<int, std::string> cache(0, 2);
+    std::string v;
+
+    cache.put(1, "a");
+    CHECK(!cache.get(1, v), "capacity=0: get(1) 未命中");
+    CHECK(cache.get(1).empty(), "capacity=0: get(1) 返回空串");
+}
+
+void testARCMoreSequenceSmoke() {
+    std::cout << "\n========== ARC 多步 smoke ==========" << std::endl;
+    Mycache::ARCCache<int, std::string> cache(3, 2);
+    std::string v;
+
+    cache.put(1, "a");
+    cache.put(2, "b");
+    cache.put(3, "c");
+
+    CHECK(cache.get(1, v) && v == "a", "get(1)=a");
+    CHECK(cache.get(1, v) && v == "a", "get(1)=a (再次访问)");
+
+    cache.put(4, "d"); // 发生淘汰
+    CHECK(cache.get(4, v) && v == "d", "get(4)=d");
+
+    // 不强行断言谁被淘汰，只保证不会把写进去的 key(4)弄没
+}
+
+
+
+class Timer {
+public:
+    Timer() : start_(std::chrono::high_resolution_clock::now()) {}
+
+    double elapsed() {
+        auto now = std::chrono::high_resolution_clock::now();
+        return std::chrono::duration_cast<std::chrono::milliseconds>(now - start_).count();
+    }
+
+private:
+    std::chrono::time_point<std::chrono::high_resolution_clock> start_;
+};
+
+// 辅助函数：打印结果（保持和 KamaCache 一致的风格）
+void printResults(const std::string& testName, int capacity,
+                   const std::vector<int>& get_operations,
+                   const std::vector<int>& hits) {
+    std::cout << "=== " << testName << " 结果汇总 ===" << std::endl;
+    std::cout << "缓存大小: " << capacity << std::endl;
+
+    std::vector<std::string> names;
+    if (hits.size() == 3) {
+        names = {"LRU", "LFU", "ARC"};
+    } else if (hits.size() == 4) {
+        names = {"LRU", "LFU", "ARC", "LRU-K"};
+    } else if (hits.size() == 5) {
+        names = {"LRU", "LFU", "ARC", "LRU-K", "LFU-Aging"};
+    }
+
+    for (size_t i = 0; i < hits.size(); ++i) {
+        double hitRate = 100.0 * hits[i] / get_operations[i];
+        std::cout << (i < names.size() ? names[i] : "Algorithm " + std::to_string(i + 1))
+                  << " - 命中率: " << std::fixed << std::setprecision(2) << hitRate << "% ";
+        std::cout << "(" << hits[i] << "/" << get_operations[i] << ")" << std::endl;
+    }
+    std::cout << std::endl;
+}
+
+static constexpr double SCALE = 1; // 可调：0.02=先跑小一点；确认逻辑后再改大
+
+void testHotDataAccess_Mycache() {
+    std::cout << "\n=== 测试场景1：热点数据访问测试 ===" << std::endl;
+
+    const int CAPACITY = 20;
+    const int OPERATIONS = static_cast<int>(500000 * SCALE);
+    const int HOT_KEYS = 20;
+    const int COLD_KEYS = 5000;
+
+    Mycache::LRUCache<int, std::string> lru(CAPACITY);
+    Mycache::LFUCache<int, std::string> lfu(CAPACITY);
+    Mycache::ARCCache<int, std::string> arc(CAPACITY);
+
+    Mycache::LRUKCache<int, std::string> lruk(CAPACITY, HOT_KEYS + COLD_KEYS, 2);
+    Mycache::LFUCache<int, std::string> lfuAging(CAPACITY, 20000);
+
+    std::random_device rd;
+    std::mt19937 gen(rd());
+
+    std::array<Mycache::MycachePolicy<int, std::string>*, 5> caches = {&lru, &lfu, &arc, &lruk, &lfuAging};
+    std::vector<int> hits(5, 0);
+    std::vector<int> get_operations(5, 0);
+
+    for (int i = 0; i < (int)caches.size(); ++i) {
+        for (int key = 0; key < HOT_KEYS; ++key) {
+            caches[i]->put(key, "value" + std::to_string(key));
+        }
+
+        for (int op = 0; op < OPERATIONS; ++op) {
+            bool isPut = (gen() % 100 < 30);
+
+            int key;
+            if (gen() % 100 < 70) key = gen() % HOT_KEYS;
+            else key = HOT_KEYS + (gen() % COLD_KEYS);
+
+            if (isPut) {
+                std::string value = "value" + std::to_string(key) + "_v" + std::to_string(op % 100);
+                caches[i]->put(key, value);
+            } else {
+                std::string result;
+                get_operations[i]++;
+                if (caches[i]->get(key, result)) {
+                    hits[i]++;
+                }
+            }
+        }
+    }
+
+    printResults("热点数据访问测试", CAPACITY, get_operations, hits);
+}
+
+void testLoopPattern_Mycache() {
+    std::cout << "\n=== 测试场景2：循环扫描测试 ===" << std::endl;
+
+    const int CAPACITY = 50;
+    const int LOOP_SIZE = 500;
+    const int OPERATIONS = static_cast<int>(600000 * SCALE);
+
+    Mycache::LRUCache<int, std::string> lru(CAPACITY);
+    Mycache::LFUCache<int, std::string> lfu(CAPACITY);
+    Mycache::ARCCache<int, std::string> arc(CAPACITY);
+
+    Mycache::LRUKCache<int, std::string> lruk(CAPACITY, LOOP_SIZE * 2, 2);
+    Mycache::LFUCache<int, std::string> lfuAging(CAPACITY, 3000);
+
+    std::random_device rd;
+    std::mt19937 gen(rd());
+
+    std::array<Mycache::MycachePolicy<int, std::string>*, 5> caches = {&lru, &lfu, &arc, &lruk, &lfuAging};
+    std::vector<int> hits(5, 0);
+    std::vector<int> get_operations(5, 0);
+
+    for (int i = 0; i < (int)caches.size(); ++i) {
+        for (int key = 0; key < LOOP_SIZE / 5; ++key) {
+            caches[i]->put(key, "loop" + std::to_string(key));
+        }
+
+        int current_pos = 0;
+
+        for (int op = 0; op < OPERATIONS; ++op) {
+            bool isPut = (gen() % 100 < 20);
+
+            int key;
+            if (op % 100 < 60) {
+                key = current_pos;
+                current_pos = (current_pos + 1) % LOOP_SIZE;
+            } else if (op % 100 < 90) {
+                key = gen() % LOOP_SIZE;
+            } else {
+                key = LOOP_SIZE + (gen() % LOOP_SIZE);
+            }
+
+            if (isPut) {
+                std::string value = "loop" + std::to_string(key) + "_v" + std::to_string(op % 100);
+                caches[i]->put(key, value);
+            } else {
+                std::string result;
+                get_operations[i]++;
+                if (caches[i]->get(key, result)) hits[i]++;
+            }
+        }
+    }
+
+    printResults("循环扫描测试", CAPACITY, get_operations, hits);
+}
+
+void testWorkloadShift_Mycache() {
+    std::cout << "\n=== 测试场景3：工作负载剧烈变化测试 ===" << std::endl;
+
+    const int CAPACITY = 30;
+    const int OPERATIONS = static_cast<int>(800000 * SCALE);
+    const int PHASE_LENGTH = OPERATIONS / 5;
+
+    Mycache::LRUCache<int, std::string> lru(CAPACITY);
+    Mycache::LFUCache<int, std::string> lfu(CAPACITY);
+    Mycache::ARCCache<int, std::string> arc(CAPACITY);
+
+    Mycache::LRUKCache<int, std::string> lruk(CAPACITY, 500, 2);
+    Mycache::LFUCache<int, std::string> lfuAging(CAPACITY, 10000);
+
+    std::random_device rd;
+    std::mt19937 gen(rd());
+
+    std::array<Mycache::MycachePolicy<int, std::string>*, 5> caches = {&lru, &lfu, &arc, &lruk, &lfuAging};
+    std::vector<int> hits(5, 0);
+    std::vector<int> get_operations(5, 0);
+
+    for (int i = 0; i < (int)caches.size(); ++i) {
+        for (int key = 0; key < 30; ++key) {
+            caches[i]->put(key, "init" + std::to_string(key));
+        }
+
+        for (int op = 0; op < OPERATIONS; ++op) {
+            int phase = op / PHASE_LENGTH;
+
+            int putProbability;
+            switch (phase) {
+                case 0: putProbability = 15; break;
+                case 1: putProbability = 30; break;
+                case 2: putProbability = 10; break;
+                case 3: putProbability = 25; break;
+                case 4: putProbability = 20; break;
+                default: putProbability = 20;
+            }
+
+            bool isPut = (gen() % 100 < putProbability);
+
+            int key;
+            if (op < PHASE_LENGTH) {
+                key = gen() % 5;
+            } else if (op < PHASE_LENGTH * 2) {
+                key = gen() % 400;
+            } else if (op < PHASE_LENGTH * 3) {
+                key = (op - PHASE_LENGTH * 2) % 100;
+            } else if (op < PHASE_LENGTH * 4) {
+                int locality = (op / 800) % 5;
+                key = locality * 15 + (gen() % 15);
+            } else {
+                int r = gen() % 100;
+                if (r < 40) key = gen() % 5;
+                else if (r < 70) key = 5 + (gen() % 45);
+                else key = 50 + (gen() % 350);
+            }
+
+            if (isPut) {
+                std::string value = "value" + std::to_string(key) + "_p" + std::to_string(phase);
+                caches[i]->put(key, value);
+            } else {
+                std::string result;
+                get_operations[i]++;
+                if (caches[i]->get(key, result)) hits[i]++;
+            }
+        }
+    }
+
+    printResults("工作负载剧烈变化测试", CAPACITY, get_operations, hits);
+}
 int main() {
     std::cout << "========== Mycache 测试 ==========" << std::endl;
 
@@ -493,6 +854,18 @@ int main() {
     testLFUDeterministicSequence();
     testLFUMaxAverageDecay_Triggers();
     testLFUMaxAverageDecay_NoTrigger_EvictMinFreq();
+    testHashLFUBasic();
+    testHashLFUEviction();
+    testHashLFUPolymorphism();
+    testHashLFUManyKeys();
+    testARCBasicPutGet();
+    testARCUpdateValue();
+    testARCEvictionAfterAccess();
+    testARCZeroCapacity();
+    testARCMoreSequenceSmoke();
+    testHotDataAccess_Mycache();
+    testLoopPattern_Mycache();
+    testWorkloadShift_Mycache();
     std::cout << "\n========== 结果 ==========" << std::endl;
     std::cout << "通过: " << passed << ", 失败: " << failed << std::endl;
     return failed > 0 ? 1 : 0;
