@@ -12,6 +12,7 @@
 #include <random>
 #include <algorithm>
 #include <array>
+#include <thread>
 
 
 
@@ -655,7 +656,7 @@ void testHotDataAccess_Mycache() {
 
     Mycache::LRUCache<int, std::string> lru(CAPACITY);
     Mycache::LFUCache<int, std::string> lfu(CAPACITY);
-    Mycache::ARCCache<int, std::string> arc(CAPACITY);
+    Mycache::ARCCache<int, std::string> arc(CAPACITY/2);
 
     Mycache::LRUKCache<int, std::string> lruk(CAPACITY, HOT_KEYS + COLD_KEYS, 2);
     Mycache::LFUCache<int, std::string> lfuAging(CAPACITY, 20000);
@@ -704,7 +705,7 @@ void testLoopPattern_Mycache() {
 
     Mycache::LRUCache<int, std::string> lru(CAPACITY);
     Mycache::LFUCache<int, std::string> lfu(CAPACITY);
-    Mycache::ARCCache<int, std::string> arc(CAPACITY);
+    Mycache::ARCCache<int, std::string> arc(CAPACITY/2);
 
     Mycache::LRUKCache<int, std::string> lruk(CAPACITY, LOOP_SIZE * 2, 2);
     Mycache::LFUCache<int, std::string> lfuAging(CAPACITY, 3000);
@@ -759,7 +760,7 @@ void testWorkloadShift_Mycache() {
 
     Mycache::LRUCache<int, std::string> lru(CAPACITY);
     Mycache::LFUCache<int, std::string> lfu(CAPACITY);
-    Mycache::ARCCache<int, std::string> arc(CAPACITY);
+    Mycache::ARCCache<int, std::string> arc(CAPACITY/2);
 
     Mycache::LRUKCache<int, std::string> lruk(CAPACITY, 500, 2);
     Mycache::LFUCache<int, std::string> lfuAging(CAPACITY, 10000);
@@ -821,6 +822,29 @@ void testWorkloadShift_Mycache() {
 
     printResults("工作负载剧烈变化测试", CAPACITY, get_operations, hits);
 }
+
+template <class Cache>
+void runMultiThreadStress(Cache& cache) {
+    const int THREADS = 8;
+    const int OPS = 20000;
+    auto worker = [&](int tid) {
+        std::mt19937 gen(tid + 123);
+        for (int i = 0; i < OPS; ++i) {
+            int key = gen() % 200;
+            if (i % 3 == 0) {
+                cache.put(key, std::to_string(tid) + ":" + std::to_string(i));
+            } else {
+                std::string v;
+                cache.get(key, v);
+            }
+        }
+    };
+    std::vector<std::thread> ts;
+    for (int t = 0; t < THREADS; ++t) ts.emplace_back(worker, t);
+    for (auto& th : ts) th.join();
+}
+
+
 int main() {
     std::cout << "========== Mycache 测试 ==========" << std::endl;
 
@@ -866,7 +890,7 @@ int main() {
     testHotDataAccess_Mycache();
     testLoopPattern_Mycache();
     testWorkloadShift_Mycache();
-    std::cout << "\n========== 结果 ==========" << std::endl;
+
     std::cout << "通过: " << passed << ", 失败: " << failed << std::endl;
     return failed > 0 ? 1 : 0;
 }

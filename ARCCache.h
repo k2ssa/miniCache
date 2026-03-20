@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <map>
 #include <list>
+#include <mutex>
 
 
 namespace Mycache{
@@ -60,6 +61,7 @@ public:
 
     bool put(Key key,Value value){
         if(capacity_==0) return false;
+        std::lock_guard<std::mutex> lock(mutex_);
         auto it = mainCache_.find(key);
         if(it!=mainCache_.end()){
             it->second->setValue(value);
@@ -74,6 +76,7 @@ public:
     }
 
     bool get(Key key,Value& value, bool& shouldTransform){
+        std::lock_guard<std::mutex> lock(mutex_);
         auto it = mainCache_.find(key);
         if(it == mainCache_.end()) return false;
         NodePtr node = it->second;
@@ -164,6 +167,7 @@ private:
     size_t capacity_,ghostCapacity_,transformThreshold_;
     NodeMap mainCache_,ghostCache_;
     NodePtr mainHead_,mainTail_,ghostHead_,ghostTail_;
+    std::mutex mutex_;
 };
 
 
@@ -189,6 +193,7 @@ public:
 
     bool put(Key key,Value value){
         if(capacity_==0) return false;
+        std::lock_guard<std::mutex> lock(mutex_);
         auto it = mainCache_.find(key);
         if(it != mainCache_.end()){
             it->second->setValue(value);
@@ -295,6 +300,7 @@ private:
     NodeMap mainCache_,ghostCache_;
     FreqMap freqMap_;
     NodePtr ghostHead_,ghostTail_;
+    std::mutex mutex_;
 };
 
 

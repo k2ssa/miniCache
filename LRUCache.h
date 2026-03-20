@@ -66,7 +66,7 @@ private:
     NodeMap nodeMap_;
     NodePtr dummyHead_;
     NodePtr dummyTail_;
-
+    std::mutex mutex_;
 };
 
 template <typename Key,typename Value>
@@ -80,7 +80,7 @@ void LRUCache<Key,Value>::initList(){
 template <typename Key,typename Value>
 void LRUCache<Key,Value>::put(Key k,Value v){
     if(capacity_<=0) return;
-
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = nodeMap_.find(k);
     if(it!=nodeMap_.end()){
         it->second->setValue(v);
@@ -92,6 +92,7 @@ void LRUCache<Key,Value>::put(Key k,Value v){
 
 template <typename Key,typename Value>
 bool LRUCache<Key,Value>::get(Key k,Value &v){
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = nodeMap_.find(k);
     if(it == nodeMap_.end()) return false;
     moveToMostRecent(it->second);
@@ -167,11 +168,12 @@ private:
     int k_;
     std::unique_ptr<LRUCache<Key,size_t>> historyList_;
     std::unordered_map<Key,Value> historyValueMap_;
+    mutable std::mutex mutex_;
 };
 
 template <typename Key,typename Value>
 bool LRUKCache<Key,Value>::get(Key key,Value& value){
-
+    std::lock_guard<std::mutex> lock(mutex_);
     size_t count = historyList_->get(key);
     count++;
     historyList_->put(key,count);
@@ -199,6 +201,7 @@ Value LRUKCache<Key,Value>::get(Key key){
 
 template <typename Key,typename Value>
 void LRUKCache<Key,Value>::put(Key key,Value value){
+    std::lock_guard<std::mutex> lock(mutex_);
     Value tmp{}; 
     bool hit = Base::get(key,tmp);
     if(hit){

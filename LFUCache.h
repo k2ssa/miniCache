@@ -5,6 +5,7 @@
 #include <map>
 #include <list>
 #include "CachePolicy.h"
+#include <mutex>
 
 namespace Mycache{
 
@@ -22,6 +23,7 @@ public:
     void put(Key key,Value value) override{
         if(capacity_ <=0) return;
 
+        std::lock_guard<std::mutex> lock(mutex_);
         auto it = keyToNode_.find(key);
         if(it!=keyToNode_.end()){
             it->second.value = std::move(value);
@@ -46,6 +48,7 @@ public:
 
 
     bool get(Key key,Value& value) override{
+        std::lock_guard<std::mutex> lock(mutex_);
         auto it = keyToNode_.find(key);
         if(it == keyToNode_.end()) return false;
         value = it->second.value;
@@ -193,10 +196,52 @@ private:
 
     typename std::map<size_t,std::list<Key>> freqToKeys_;
 
+    std::mutex mutex_;
 };
 
+template <typename Key,typename Value>
+class HashLFUCache: public MycachePolicy<Key,Value>{
+public:
+    HashLFUCache(size_t capacity,int sliceNum,int maxAverageNum = 10)
+    :capacity_(capacity)
+    ,sliceNum_(sliceNum>0?sliceNum:static_cast<int>(std::thread::hardware_concurrency()))
+    {
+        size_t sliceSize = (capacity_ + sliceNum_ -1)/sliceNum_;
+        if(sliceSize < 1) sliceSize=1;
+        for(int  i=0;i<sliceNum_;i++){
+            lfuSlice_.emplace_back(
+                std::make_unique<LFUCache<Key,Value>>(static_cast<int>(sliceSize),maxAverageNum)
+
+            );
+        }
+    }
+
+    void put(Key key,Value value) override{
+        lfuSlice_[index(key)]->put(key,std::move(value));
+    }
+
+    bool get(Key key,Value& value) override{
+        return lfuSlice_[index(key)]->get(key,value);
+    }
+
+    Value get(Key key)override{
+        Value v{};
+        get(key,v);
+        return v;
+    }
 
 
+private:
+    size_t index(Key key) const{
+        return std::hash<Key>{}(key) % static_cast<size_t>(sliceNum_);
 
+    }
+
+    size_t capacity_;
+    int sliceNum_;
+    std::vector<std::unique_ptr<LFUCache<Key,Value>>> lfuSlice_;
+
+
+};
 
 }
